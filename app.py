@@ -9,6 +9,7 @@ from openai import OpenAI
 import plotly.express as px
 import plotly.graph_objects as go
 import os
+from pyvis.network import Network
 
 # 设置页面标题
 st.set_page_config(page_title="基于AI的数据分析", layout="wide")
@@ -83,13 +84,13 @@ def connect_to_database():
 
 # 修改数据加载函数
 def load_data():
-    data_source = st.radio("选择数据源", ["Excel文件", "SQLite���据库"])
+    data_source = st.radio("选择数据源", ["Excel文件", "RDBMS数据库"])
     
     if data_source == "Excel文件":
         uploaded_file = st.file_uploader("上传Excel文件", type=["xlsx", "xls"])
         if uploaded_file is not None:
             df = pd.read_excel(uploaded_file)
-            return df, None
+            return df, None, data_source
     else:
         conn = connect_to_database()
         if conn is not None:
@@ -99,7 +100,7 @@ def load_data():
                     selected_table = st.selectbox("选择数据表", tables['name'])
                     if selected_table:
                         df = pd.read_sql_query(f"SELECT * FROM {selected_table}", conn)
-                        return df, conn
+                        return df, conn, data_source
                 else:
                     st.warning("数据库中没有找到任何表。请确保已经初始化数据库。")
             except sqlite3.Error as e:
@@ -107,7 +108,7 @@ def load_data():
         else:
             st.error("无法连接到数据库。请检查数据库文件是否存在。")
     
-    return None, None
+    return None, None, data_source
 
 # 添加这个函数来检查数据库状态
 def check_database():
@@ -141,7 +142,7 @@ def generate_table_info(df, conn):
     return table_info
 
 # 加载数据
-df, conn = load_data()
+df, conn, data_source = load_data()
 
 if df is not None:
     st.success("数据已成功加载！")
@@ -204,7 +205,7 @@ if df is not None:
                     elif analysis_type == "箱线图":
                         fig = px.box(result_df, x=x_column, y=y_column, title="箱线图")
                     elif analysis_type == "热力图":
-                        fig = px.density_heatmap(result_df, x=x_column, y=y_column, z=color_column, title="热力图")
+                        fig = px.density_heatmap(result_df, x=x_column, y=y_column, z=color_column, title="热力���")
                     elif analysis_type == "面积图":
                         fig = px.area(result_df, x=x_column, y=y_column, title="面积图")
                     elif analysis_type == "直方图":
@@ -256,22 +257,32 @@ def get_table_relationships(conn):
     
     return relationships
 
-# 添加新函数来生成关系表格
-def generate_relationship_table(relationships):
-    df = pd.DataFrame(relationships)
-    return df
+# 添加新函数来生成关系图
+def generate_relationship_graph(relationships):
+    net = Network(height="750px", width="100%", directed=True)
+    
+    for rel in relationships:
+        table = rel['table']
+        references_table = rel['references_table']
+        label = f"{rel['column']} -> {rel['references_column']}"
+        
+        net.add_node(table, label=table, shape='box')
+        net.add_node(references_table, label=references_table, shape='box')
+        net.add_edge(table, references_table, title=label, label=label)
+    
+    return net.generate_html()
 
 # 修改数据库结构可视化部分
-st.subheader("数据库表关系")
+if data_source == "RDBMS数据库":
+    st.subheader("数据库表关系")
 
-if st.button("显示数据库表关系"):
-    conn = connect_to_database()
-    if conn:
-        relationships = get_table_relationships(conn)
-        if relationships:
-            st.subheader("数据库表关系表格")
-            relationship_df = generate_relationship_table(relationships)
-            st.dataframe(relationship_df)
-        else:
-            st.info("未找到表之间的关系。")
-        conn.close()
+    if st.button("显示数据库表关系"):
+        conn = connect_to_database()
+        if conn:
+            relationships = get_table_relationships(conn)
+            if relationships:
+                html = generate_relationship_graph(relationships)
+                st.components.v1.html(html, height=750, scrolling=True)
+            else:
+                st.info("未找到表之间的关系。")
+            conn.close()
