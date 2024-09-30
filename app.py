@@ -1,288 +1,214 @@
 import streamlit as st
 import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
-from sqlalchemy import create_engine, inspect, MetaData
-import sqlite3
-import io
-from openai import OpenAI
 import plotly.express as px
+import sqlite3
 import plotly.graph_objects as go
-import os
-from pyvis.network import Network
+import numpy as np
 
-# 设置页面标题
-st.set_page_config(page_title="基于AI的数据分析", layout="wide")
+def main():
+    st.set_page_config(layout="wide")
+    st.title("通用数据分析平台")
+    
+    # 文件上传
+    uploaded_files = st.file_uploader("上传CSV文件", type="csv", accept_multiple_files=True)
+    
+    # 数据库连接（示例）
+    db_connection = st.text_input("输入数据库连接字符串（示例：sqlite:///example.db）")
+    
+    if uploaded_files or db_connection:
+        data_sources = process_data_sources(uploaded_files, db_connection)
+        if data_sources:
+            perform_analysis(data_sources)
+            perform_advanced_analysis(data_sources)
 
-# 初始化 OpenAI 客户端
-client = OpenAI(
-    api_key="sk-1pUmQlsIkgla3CuvKTgCrzDZ3r0pBxO608YJvIHCN18lvOrn",
-    base_url="https://api.chatanywhere.tech/v1"
-)
-
-# 主页面标题
-st.title("基于AI的数据分析")
-
-# NL2SQL函数
-def nl_to_sql(nl_query, table_info):
-    prompt = f"""
-    给定以下表格信息：
-    {table_info}
+def process_data_sources(uploaded_files, db_connection):
+    data_sources = {}
     
-    将以下自然语言查询转换为SQL：
-    {nl_query}
+    # 处理上传的CSV文件
+    for file in uploaded_files:
+        df = pd.read_csv(file)
+        data_sources[file.name] = df
     
-    只返回SQL查询，不要包含任何解释。
-    """
-    
-    response = client.chat.completions.create(
-        model="gpt-3.5-turbo",
-        messages=[
-            {"role": "system", "content": "你是一个SQL专家，能够将自然语言查询转换为SQL语句。请用中文回答。"},
-            {"role": "user", "content": prompt}
-        ],
-        max_tokens=150,
-        n=1,
-        stop=None,
-        temperature=0.5,
-    )
-    
-    sql_query = response.choices[0].message.content.strip()
-    
-    # 移除可能的前缀和后缀
-    if sql_query.startswith("```sql"):
-        sql_query = sql_query[6:]
-    if sql_query.endswith("```"):
-        sql_query = sql_query[:-3]
-    
-    return sql_query
-
-def execute_sql_query(df, sql_query):
-    # 创建一个临时的 SQLite 数据库在内存中
-    engine = create_engine('sqlite:///:memory:')
-    
-    # 将 DataFrame 写入 SQLite 数据库
-    df.to_sql('data', engine, index=False)
-    
-    # 执行 SQL 查询
-    result = pd.read_sql_query(sql_query, engine)
-    
-    return result
-
-# 修改数据库连接函数
-def connect_to_database():
-    db_path = 'chinook.db'
-    if not os.path.exists(db_path):
-        st.error(f"数据库文件 {db_path} 不存在。请确保已运行 initialize_database.py 脚本。")
-        return None
-    try:
-        conn = sqlite3.connect(db_path)
-        return conn
-    except sqlite3.Error as e:
-        st.error(f"连接数据库时出错: {e}")
-        return None
-
-# 修改数据加载函数
-def load_data():
-    data_source = st.radio("选择数据源", ["Excel文件", "RDBMS数据库"])
-    
-    if data_source == "Excel文件":
-        uploaded_file = st.file_uploader("上传Excel文件", type=["xlsx", "xls"])
-        if uploaded_file is not None:
-            df = pd.read_excel(uploaded_file)
-            return df, None, data_source
-    else:
-        conn = connect_to_database()
-        if conn is not None:
-            try:
-                tables = pd.read_sql_query("SELECT name FROM sqlite_master WHERE type='table'", conn)
-                if not tables.empty:
-                    selected_table = st.selectbox("选择数据表", tables['name'])
-                    if selected_table:
-                        df = pd.read_sql_query(f"SELECT * FROM {selected_table}", conn)
-                        return df, conn, data_source
-                else:
-                    st.warning("数据库中没有找到任何表。请确保已经初始化数据库。")
-            except sqlite3.Error as e:
-                st.error(f"查询数据库时出错: {e}")
-        else:
-            st.error("无法连接到数据库。请检查数据库文件是否存在。")
-    
-    return None, None, data_source
-
-# 添加这个函数来检查数据库状态
-def check_database():
-    try:
-        conn = sqlite3.connect('chinook.db')
-        cursor = conn.cursor()
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
-        tables = cursor.fetchall()
-        if tables:
-            st.success(f"数据库连接成功！发现 {len(tables)} 个表。")
+    # 处理数据库连接
+    if db_connection:
+        try:
+            conn = sqlite3.connect(db_connection.split("://")[-1])
+            cursor = conn.cursor()
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
+            tables = cursor.fetchall()
             for table in tables:
-                st.write(f"- {table[0]}")
-        else:
-            st.warning("数据库连接成功，但没有找到任何表。")
-        conn.close()
-    except sqlite3.Error as e:
-        st.error(f"数据库连接错误: {e}")
+                df = pd.read_sql_query(f"SELECT * FROM {table[0]}", conn)
+                data_sources[table[0]] = df
+            conn.close()
+        except Exception as e:
+            st.error(f"连接数据库时出错：{str(e)}")
+    
+    return data_sources
 
-# 修改表信息生成函数
-def generate_table_info(df, conn):
-    if conn:
-        inspector = inspect(create_engine('sqlite:///chinook.db'))
-        table_info = "Available tables:\n"
-        for table_name in inspector.get_table_names():
-            table_info += f"- {table_name}\n"
-            columns = inspector.get_columns(table_name)
-            table_info += f"  Columns: {', '.join([col['name'] for col in columns])}\n"
-    else:
-        table_info = f"Table name: data\nColumns: {', '.join(df.columns)}\n"
-        table_info += "\n".join([f"{col}: {df[col].dtype}" for col in df.columns])
-    return table_info
-
-# 加载数据
-df, conn, data_source = load_data()
-
-if df is not None:
-    st.success("数据已成功加载！")
+def perform_analysis(data_sources):
+    st.header("数据分析")
+    
+    # 选择数据源
+    selected_source = st.selectbox("选择数据源", list(data_sources.keys()))
+    df = data_sources[selected_source]
     
     # 显示数据预览
     st.subheader("数据预览")
     st.dataframe(df.head())
     
-    table_info = generate_table_info(df, conn)
+    # 字段选择
+    st.subheader("字段选择")
+    columns = df.columns.tolist()
     
-    # 自然语言查询
-    nl_query = st.text_input("请输入您的自然语言查询：")
+    # 使用 multiselect 来选择 X 轴和 Y 轴
+    x_axis = st.multiselect("选择X轴字段", columns, key="x_axis_select")
+    y_axis = st.multiselect("选择Y轴字段", columns, key="y_axis_select")
     
-    if nl_query:
-        # 使用NL2SQL转换查询
-        sql_query = nl_to_sql(nl_query, table_info)
-        
-        st.write(f"生成的SQL查询：{sql_query}")
-        
+    # 图表类型选择
+    chart_types = [
+        "折线图", "柱状图", "散点图", "面积图", "箱线图", "小提琴图",
+        "直方图", "密度图", "热力图", "等高线图", "极坐标图", "树状图",
+        "旭日图", "漏斗图", "瀑布图"
+    ]
+    chart_type = st.selectbox("选择图表类型", chart_types)
+    
+    # 绘制图表
+    if x_axis and y_axis:
         try:
-            if conn:
-                result_df = pd.read_sql_query(sql_query, conn)
-            else:
-                result_df = execute_sql_query(df, sql_query)
+            # 使用选择的第一个字段作为 X 轴和 Y 轴
+            x = x_axis[0]
+            y = y_axis[0]
             
-            st.write("查询结果：")
-            st.dataframe(result_df)
+            # 绘制图表的代码保持不变
+            if chart_type == "折线图":
+                fig = px.line(df, x=x, y=y)
+            elif chart_type == "柱状图":
+                fig = px.bar(df, x=x, y=y)
+            elif chart_type == "散点图":
+                fig = px.scatter(df, x=x, y=y)
+            elif chart_type == "面积图":
+                fig = px.area(df, x=x, y=y)
+            elif chart_type == "箱线图":
+                fig = px.box(df, x=x, y=y)
+            elif chart_type == "小提琴图":
+                fig = px.violin(df, x=x, y=y)
+            elif chart_type == "直方图":
+                fig = px.histogram(df, x=x)
+            elif chart_type == "密度图":
+                fig = px.density_contour(df, x=x, y=y)
+            elif chart_type == "热力图":
+                fig = px.density_heatmap(df, x=x, y=y)
+            elif chart_type == "等高线图":
+                fig = px.density_contour(df, x=x, y=y)
+            elif chart_type == "极坐标图":
+                fig = px.line_polar(df, r=y, theta=x, line_close=True)
+            elif chart_type == "树状图":
+                fig = px.treemap(df, path=[x], values=y)
+            elif chart_type == "旭日图":
+                fig = px.sunburst(df, path=[x], values=y)
+            elif chart_type == "漏斗图":
+                fig = px.funnel(df, x=x, y=y)
+            elif chart_type == "瀑布图":
+                # 使用 plotly.graph_objects 创建瀑布图
+                sorted_df = df.sort_values(by=x)
+                fig = go.Figure(go.Waterfall(
+                    name="瀑布图", orientation="v",
+                    measure=["relative"] * len(sorted_df),
+                    x=sorted_df[x],
+                    y=sorted_df[y],
+                    connector={"line": {"color": "rgb(63, 63, 63)"}},
+                ))
+                fig.update_layout(title=f"{y} 的瀑布图", showlegend=False)
             
-            # 分析选项
-            if not result_df.empty:
-                st.subheader("数据可视化")
-                
-                # 创建两列布局
-                col1, col2 = st.columns([1, 3])
-                
-                with col1:
-                    analysis_type = st.selectbox("选择分析图表类型", [
-                        "柱状图", "折线图", "散点图", "饼图", "箱线图", "热力图", "面积图", "直方图"
-                    ])
-                    
-                    x_column = st.selectbox("选择X轴", result_df.columns)
-                    y_column = st.selectbox("选择Y轴", result_df.columns)
-                    
-                    if analysis_type in ["散点图", "热力图"]:
-                        color_column = st.selectbox("选择颜色映射列", result_df.columns)
-                    
-                    # 图表大小调整
-                    chart_width = st.slider("图表宽度", 400, 1200, 800)
-                    chart_height = st.slider("图表高度", 300, 900, 500)
-                
-                with col2:
-                    if analysis_type == "柱状图":
-                        fig = px.bar(result_df, x=x_column, y=y_column, title="柱状图")
-                    elif analysis_type == "折线图":
-                        fig = px.line(result_df, x=x_column, y=y_column, title="折线图")
-                    elif analysis_type == "散点图":
-                        fig = px.scatter(result_df, x=x_column, y=y_column, color=color_column, title="散点图")
-                    elif analysis_type == "饼图":
-                        fig = px.pie(result_df, values=y_column, names=x_column, title="饼图")
-                    elif analysis_type == "箱线图":
-                        fig = px.box(result_df, x=x_column, y=y_column, title="箱线图")
-                    elif analysis_type == "热力图":
-                        fig = px.density_heatmap(result_df, x=x_column, y=y_column, z=color_column, title="热力���")
-                    elif analysis_type == "面积图":
-                        fig = px.area(result_df, x=x_column, y=y_column, title="面积图")
-                    elif analysis_type == "直方图":
-                        fig = px.histogram(result_df, x=x_column, title="直方图")
-                    
-                    # 调整图表大小
-                    fig.update_layout(width=chart_width, height=chart_height)
-                    
-                    # 显示图表
-                    st.plotly_chart(fig)
-            else:
-                st.write("查询结果为空")
-        
+            st.plotly_chart(fig, use_container_width=True)
         except Exception as e:
-            st.error(f"查询执行错误: {e}")
-
-else:
-    st.info("选择数据源并加载数")
-
-# 关闭数据库连接
-if conn:
-    conn.close()
-
-# 数据导出功能已被移除
-
-# 添加新函数来获取表之间的关系
-def get_table_relationships(conn):
-    cursor = conn.cursor()
+            st.error(f"绘制图表时出错：{str(e)}")
+    else:
+        st.warning("请选择X轴和Y轴字段")
     
-    # 获取所有表名
-    cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
-    tables = cursor.fetchall()
-    
-    relationships = []
-    
-    for table in tables:
-        table_name = table[0]
-        # 获取表的外键信息
-        cursor.execute(f"PRAGMA foreign_key_list({table_name})")
-        foreign_keys = cursor.fetchall()
-        
-        for fk in foreign_keys:
-            relationships.append({
-                'table': table_name,
-                'column': fk[3],
-                'references_table': fk[2],
-                'references_column': fk[4]
-            })
-    
-    return relationships
+    # 基本统计信息
+    st.subheader("基本统计信息")
+    st.write(df.describe())
 
-# 添加新函数来生成关系图
-def generate_relationship_graph(relationships):
-    net = Network(height="750px", width="100%", directed=True)
+def perform_advanced_analysis(data_sources):
+    st.header("高级数据分析")
     
-    for rel in relationships:
-        table = rel['table']
-        references_table = rel['references_table']
-        label = f"{rel['column']} -> {rel['references_column']}"
-        
-        net.add_node(table, label=table, shape='box')
-        net.add_node(references_table, label=references_table, shape='box')
-        net.add_edge(table, references_table, title=label, label=label)
+    selected_source = st.selectbox("选择数据源", list(data_sources.keys()), key="advanced_source")
+    df = data_sources[selected_source]
     
-    return net.generate_html()
+    columns = df.columns.tolist()
+    
+    # 多维度分析
+    st.subheader("多维度分析")
+    
+    dimensions = st.multiselect("选择维度", columns, key="dimensions_select")
+    measures = st.multiselect("选择度量", columns, key="measures_select")
+    
+    if dimensions and measures:
+        try:
+            # 创建透视表
+            pivot_table = pd.pivot_table(df, values=measures, 
+                                         index=dimensions, 
+                                         aggfunc=lambda x: x.mode().iloc[0] if x.dtype == 'object' else x.mean())
+            st.write(pivot_table)
+            
+            # 多维度分析展示方式选择
+            multi_dim_chart_type = st.selectbox("选择多维度分析图表类型", 
+                                                ["热力图", "条形图", "散点矩阵图", "平行坐标图"])
+            
+            if multi_dim_chart_type == "热力图":
+                fig = px.imshow(pivot_table, text_auto=True, aspect="auto")
+                st.plotly_chart(fig, use_container_width=True)
+            
+            elif multi_dim_chart_type == "条形图":
+                fig = px.bar(pivot_table.reset_index(), x=dimensions[0], y=measures[0],
+                             color=dimensions[1] if len(dimensions) > 1 else None,
+                             barmode='group')
+                st.plotly_chart(fig, use_container_width=True)
+            
+            elif multi_dim_chart_type == "散点矩阵图":
+                fig = px.scatter_matrix(df[dimensions + measures])
+                st.plotly_chart(fig, use_container_width=True)
+            
+            elif multi_dim_chart_type == "平行坐标图":
+                fig = px.parallel_coordinates(df, dimensions=dimensions + measures)
+                st.plotly_chart(fig, use_container_width=True)
+            
+        except Exception as e:
+            st.error(f"创建多维度分析图表时出错：{str(e)}")
+    else:
+        st.warning("请至少选择一个维度和一个度量")
+    
+    # 相关性分析
+    st.subheader("相关性分析")
+    correlation_columns = st.multiselect("选择要分析相关性的列", columns, key="correlation_select")
 
-# 修改数据库结构可视化部分
-if data_source == "RDBMS数据库":
-    st.subheader("数据库表关系")
-
-    if st.button("显示数据库表关系"):
-        conn = connect_to_database()
-        if conn:
-            relationships = get_table_relationships(conn)
-            if relationships:
-                html = generate_relationship_graph(relationships)
-                st.components.v1.html(html, height=750, scrolling=True)
+    if len(correlation_columns) >= 2:
+        try:
+            # 只选择数值型列进行相关性分析
+            numeric_columns = df[correlation_columns].select_dtypes(include=[np.number]).columns
+            if len(numeric_columns) < 2:
+                st.warning("请至少选择两个数值型列进行相关性分析")
             else:
-                st.info("未找到表之间的关系。")
-            conn.close()
+                correlation_matrix = df[numeric_columns].corr()
+                
+                # 相关性分析展示方式选择
+                corr_chart_type = st.selectbox("选择相关性分析图表类型", 
+                                               ["热力图", "散点矩阵图"])
+                
+                if corr_chart_type == "热力图":
+                    fig = px.imshow(correlation_matrix, text_auto=True, zmin=-1, zmax=1,
+                                    color_continuous_scale=px.colors.diverging.RdBu_r)
+                    st.plotly_chart(fig, use_container_width=True)
+                
+                elif corr_chart_type == "散点矩阵图":
+                    fig = px.scatter_matrix(df[numeric_columns])
+                    st.plotly_chart(fig, use_container_width=True)
+                
+        except Exception as e:
+            st.error(f"进行相关性分析时出错：{str(e)}")
+    else:
+        st.warning("请至少选择两列进行相关性分析")
+
+if __name__ == "__main__":
+    main()
