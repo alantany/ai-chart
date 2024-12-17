@@ -418,7 +418,7 @@ def generate_chart(df, chart_type, x, y, color):
 
 def nl_to_sql(nl_query, df, table_name):
     client = OpenAI(
-        api_key="sk-1pUmQlsIkgla3CuvKTgCrzDZ3r0pBxO608YJvIHCN18lvOrn",
+        api_key="sk-iM6Jc42voEnIOPSKJfFY0ri7chsz4D13sozKyqg403Euwv5e",
         base_url="https://api.chatanywhere.tech/v1"
     )
     
